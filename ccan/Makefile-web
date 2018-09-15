@@ -1,0 +1,89 @@
+default: upload
+
+include Makefile
+# This can be overridden on cmdline to generate pages elsewhere.
+WEBDIR=/srv/www/ccodearchive.net
+PHP=php
+
+MODS := $(ALL_MODULES:ccan/%=%)
+upload: fastcheck
+	git push
+
+ALL_PAGES=$(patsubst %, $(WEBDIR)/info/%.html, $(MODS))
+DIRECT_TARBALLS=$(patsubst %, $(WEBDIR)/tarballs/%.tar.bz2, $(MODS))
+DEPEND_TARBALLS=$(patsubst %, $(WEBDIR)/tarballs/with-deps/%.tar.bz2, $(MODS))
+WEB_SUBDIRS=$(WEBDIR)/tarballs $(WEBDIR)/junkcode $(WEBDIR)/tarballs/with-deps $(WEBDIR)/info
+JUNKDIRS=$(wildcard junkcode/*)
+JUNKPAGES=$(JUNKDIRS:%=$(WEBDIR)/%.html)
+JUNKBALLS=$(JUNKDIRS:%=$(WEBDIR)/%.tar.bz2)
+PRETTIFY=$(WEBDIR)/prettify/src/run_prettify.js $(WEBDIR)/prettify/src/prettify.css
+
+
+clean-tree:
+	[ "$(WEBDEV)" ] || ! git status --porcelain | grep .
+
+webpages: clean-tree webpages-unchecked
+
+webpages-unchecked: $(WEB_SUBDIRS) $(PRETTIFY) $(WEBDIR)/index.html $(WEBDIR)/upload.html $(WEBDIR)/uploader.php $(WEBDIR)/example-config.h $(WEBDIR)/ccan.png $(WEBDIR)/ccan-bg.png $(WEBDIR)/ccan.css $(DIRECT_TARBALLS) $(DEPEND_TARBALLS) $(WEBDIR)/ccan.tar.bz2 $(ALL_PAGES) junkpages
+
+junkpages: $(WEBDIR)/list.html $(WEBDIR)/junkcode $(JUNKPAGES) $(JUNKBALLS)
+$(WEB_SUBDIRS): $(WEBDIR)
+	mkdir -p $@
+
+$(PRETTIFY):
+	git clone --depth=1 https://github.com/google/code-prettify.git $(WEBDIR)/prettify
+
+$(WEBDIR)/junkcode/%.tar.bz2: junkcode/% $(WEBDIR)/junkcode
+	git ls-files -z $< | xargs -0 -x tar cvfj $@ 
+
+$(WEBDIR)/junkcode/%.html: $(WEBDIR)/junkcode/%.tar.bz2
+	cd $(WEBDIR) && tar xfj junkcode/$*.tar.bz2
+	URLPREFIX=../ $(PHP) web/staticjunkcode.php junkcode/$* $* > $@
+
+# We want tarball to contain ccan/; we put junkcode in, but don't depend on it.
+$(WEBDIR)/ccan.tar.bz2: config.h Makefile $(shell git ls-files ccan tools licenses)
+	DIR=`pwd` && cd /tmp && ln -sf "$$DIR" ccan && tar cvfj $@ `for f in $^; do echo ccan/$$f; done` ccan/junkcode && rm ccan
+
+$(ALL_PAGES): tools/doc_extract web/staticmoduleinfo.php
+
+$(WEBDIR)/list.html: web/staticall.php tools/doc_extract $(DIRECT_TARBALLS) $(DEPEND_TARBALLS) $(WEBDIR)/ccan.tar.bz2 $(JUNKBALLS)
+	$(PHP) web/staticall.php ccan/ junkcode/ $(WEBDIR) $(MODS) > $@
+
+$(WEBDIR)/upload.html: web/staticupload.php
+	$(PHP) web/staticupload.php > $@
+
+# cpp inserts gratuitous linebreaks at start of file, makes for php problems.
+$(WEBDIR)/uploader.php: web/uploader.php.cpp
+	cpp -w -C -P $< | grep . > $@
+
+$(WEBDIR)/index.html: web/staticindex.php
+	$(PHP) web/staticindex.php > $@
+
+$(WEBDIR)/example-config.h: config.h
+	cp $< $@
+
+$(WEBDIR)/ccan.png: web/ccan.png
+	cp $< $@
+
+$(WEBDIR)/ccan-bg.png: web/ccan-bg.png
+	cp $< $@
+
+$(WEBDIR)/ccan.css: web/ccan.css
+	cp $< $@
+
+$(WEBDIR)/info/%.html: $(WEBDIR)/tarballs/%.tar.bz2 $(WEBDIR)/tarballs/with-deps/%.tar.bz2
+	@mkdir -p `dirname $@`
+	URLPREFIX=../`echo $* | tr -dc '/' | sed s',/,../,g'` $(PHP) web/staticmoduleinfo.php `pwd`/ccan/$* $* > $@
+
+$(WEBDIR)/tarballs/%.tar.bz2: ccan/%/_info clean-tree
+	@mkdir -p `dirname $@`
+	FILES=$$(tools/list_files.sh ccan/$*) && tar -c -j -f $@ $$FILES $$(echo $$FILES | xargs -n1 -r readlink | sed 's,^\(../\)*,,' | sort -u)
+
+$(WEBDIR)/tarballs/with-deps/%.tar.bz2: ccan/%/_info tools/ccan_depends clean-tree
+	@mkdir -p `dirname $@`
+	FILES=$$(tools/list_files.sh ccan/$* $$(tools/ccan_depends ccan/$*) ) && tar -c -j -f $@ $$FILES $$(echo $$FILES | xargs -n1 -r readlink | sed 's,^\(../\)*,,' | sort -u)
+
+distclean: distclean-web
+
+distclean-web:
+	rm -rf $(WEBDIR)
